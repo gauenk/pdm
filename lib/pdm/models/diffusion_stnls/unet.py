@@ -4,6 +4,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange
 
 import stnls
 
@@ -41,6 +42,8 @@ class FlowsBlock(nn.Module):
         Apply the module to `x` given `emb` embeddings.
         """
 
+
+
 class MultiSequential(nn.Sequential, FlowsBlock):
     """
     A sequential module that passes embeddings to the children that
@@ -49,11 +52,19 @@ class MultiSequential(nn.Sequential, FlowsBlock):
     def forward(self, x, emb, flows):
         for layer in self:
             if isinstance(layer, EmbedBlock):
+                B = x.shape[0]
+                x = rearrange(x,'b t c h w -> (b t) c h w')
                 x = layer(x, emb)
+                x = rearrange(x,'(b t) c h w -> b t c h w',b=B)
             elif isinstance(layer, FlowsBlock):
                 x = layer(x, flows)
             else:
+                B = x.shape[0]
+                x = rearrange(x,'b t c h w -> (b t) c h w')
+
                 x = layer(x)
+
+                x = rearrange(x,'(b t) c h w -> b t c h w',b=B)
         return x
 
 class Upsample(nn.Module):
@@ -195,6 +206,8 @@ class ResBlock(EmbedBlock):
         )
 
     def _forward(self, x, emb):
+        # B = x.shape[0]
+        # print("vid.shape: ",x.shape)
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
             h = in_rest(x)
@@ -208,9 +221,16 @@ class ResBlock(EmbedBlock):
             emb_out = emb_out[..., None]
         if self.use_scale_shift_norm:
             out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
+            # print("emb_out.shape: ",emb_out.shape)
             scale, shift = torch.chunk(emb_out, 2, dim=1)
+            # scale, shift = torch.chunk(emb_out, 2, dim=1)
+            # print(h.shape,out_norm)
+            # print(scale.shape,shift.shape)
+            # print("[shape]: ",h.shape,scale.shape,shift.shape)
+            # h = rearrange(h,'(b t) c h w -> b t) c h w')
             h = out_norm(h) * (1 + scale) + shift
             h = out_rest(h)
+            # h = rearrange(h,'(b t) c h w -> b t c h w',b=B)
         else:
             h = h + emb_out
             h = self.out_layers(h)
@@ -306,8 +326,8 @@ class NonLocalAttentionWrap(FlowsBlock):
 
     def forward(self, vid, flows=None):
         # print("vid.shape: ",vid.shape)
-        vid = vid[None,:]
-        vid = self.attn(vid, flows)[0]
+        # vid = vid[None,:]
+        vid = self.attn(vid, flows)
         # print("vid.shape: ",vid.shape)
         return vid
 
@@ -621,9 +641,12 @@ class UNet(nn.Module):
         :param flows: a 5-D batch of optical flow tensors
         :return: an [B x T x C1 x ...] Tensor of outputs.
         """
+
+        B,NF,*_ = vid.shape
         hs = []
-        gammas = gammas.view(-1, )
+        gammas = gammas.view(B*NF, )
         emb = self.cond_embed(gamma_embedding(gammas, self.inner_channel))
+        # emb = emb.view(B,NF,-1)
 
         h = vid.type(torch.float32)
         for module in self.input_blocks:
@@ -631,10 +654,17 @@ class UNet(nn.Module):
             hs.append(h)
         h = self.middle_block(h, emb, flows)
         for module in self.output_blocks:
-            h = torch.cat([h, hs.pop()], dim=1)
+            h = torch.cat([h, hs.pop()], dim=2)
             h = module(h, emb, flows)
         h = h.type(vid.dtype)
-        return self.out(h)
+
+        # -- output --
+        B = h.shape[0]
+        h = rearrange(h,'b t c h w -> (b t) c h w')
+        h = self.out(h)
+        h = rearrange(h,'(b t) c h w -> b t c h w',b=B)
+
+        return h
 
 if __name__ == '__main__':
     b, c, h, w = 3, 6, 64, 64

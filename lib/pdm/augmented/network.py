@@ -72,6 +72,7 @@ class Network(BaseNetwork):
         return model_mean, posterior_log_variance
 
     def q_sample(self, y_0, sample_gammas, noise=None):
+        # print(sample_gammas.shape,y_0.shape)
         noise = default(noise, lambda: torch.randn_like(y_0))
         return (
             sample_gammas.sqrt() * y_0 +
@@ -105,22 +106,34 @@ class Network(BaseNetwork):
 
     def forward(self, y_0, y_cond=None, mask=None, noise=None, flows=None):
         # sampling from p(gammas)
-        b, *_ = y_0.shape
-        t = torch.randint(1, self.num_timesteps, (b,), device=y_0.device).long()
+
+        b, NF, *_ = y_0.shape
+        t = torch.randint(1, self.num_timesteps, (b*NF,), device=y_0.device).long()
         gamma_t1 = extract(self.gammas, t-1, x_shape=(1, 1))
         sqrt_gamma_t2 = extract(self.gammas, t, x_shape=(1, 1))
-        sample_gammas = (sqrt_gamma_t2-gamma_t1) * torch.rand((b, 1), device=y_0.device) + gamma_t1
-        sample_gammas = sample_gammas.view(b, -1)
+        # print("gamma_t1.shape: ",gamma_t1.shape)
+        # print("sqrt_gamma_t2.shape: ",sqrt_gamma_t2.shape)
+        sample_gammas = (sqrt_gamma_t2-gamma_t1) * torch.rand((b * NF, 1), device=y_0.device) + gamma_t1
+        sample_gammas = sample_gammas.view(b, NF, -1)
+        # print("sample_gammas.shape: ",sample_gammas.shape)
 
         noise = default(noise, lambda: torch.randn_like(y_0))
         y_noisy = self.q_sample(
-            y_0=y_0, sample_gammas=sample_gammas.view(-1, 1, 1, 1), noise=noise)
+            y_0=y_0, sample_gammas=sample_gammas.view(b, NF, 1, 1, 1), noise=noise)
+
+        # print("y_0.shape: ",y_0.shape)
+        # print("y_cond.shape: ",y_cond.shape)
+        # print("y_noisy.shape: ",y_noisy.shape)
+        # print("mask.shape: ",mask.shape)
+        # print("sample_gammas.shape: ",sample_gammas.shape)
 
         if mask is not None:
-            noise_hat = self.denoise_fn(torch.cat([y_cond, y_noisy*mask+(1.-mask)*y_0], dim=1), sample_gammas, flows)
+            tmp = torch.cat([y_cond, y_noisy*mask+(1.-mask)*y_0], dim=2)
+            noise_hat = self.denoise_fn(tmp, sample_gammas, flows)
             loss = self.loss_fn(mask*noise, mask*noise_hat)
         else:
-            noise_hat = self.denoise_fn(torch.cat([y_cond, y_noisy], dim=1), sample_gammas)
+            tmp = torch.cat([y_cond, y_noisy], dim=2)
+            noise_hat = self.denoise_fn(tmp, sample_gammas)
             loss = self.loss_fn(noise, noise_hat)
         return loss
 

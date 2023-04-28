@@ -88,8 +88,10 @@ def run(cfg):
            "train":{"n_epoch":cfg.nepochs,
                     "n_iter":cfg.niters,
                     "log_iter":100}}
+    limit_batches = 150
     trainer = Palette([model], losses, sample_num,
                       cfgs.diff.task, [cfgs.optim], cfgs.ema,
+                      limit_batches=limit_batches,
                       opt=opt,phase_loader=loaders.phase,val_loader=loaders.val,
                       metrics=metrics,logger=phase_logger,writer=phase_writer)
 

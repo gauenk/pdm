@@ -19,13 +19,15 @@ class EMA():
         return old * self.beta + (1 - self.beta) * new
 
 class Palette(BaseModel):
-    def __init__(self, networks, losses, sample_num, task, optimizers, ema_scheduler=None, **kwargs):
+    def __init__(self, networks, losses, sample_num, task,
+                 optimizers, ema_scheduler=None, limit_batches=0, **kwargs):
         ''' must to init BaseModel with kwargs '''
         super(Palette, self).__init__(**kwargs)
 
         ''' networks, dataloder, optimizers, losses, etc. '''
         self.loss_fn = losses[0]
         self.netG = networks[0]
+        self.limit_batches = limit_batches
         if ema_scheduler is not None:
             self.ema_scheduler = ema_scheduler
             self.netG_EMA = copy.deepcopy(self.netG)
@@ -107,7 +109,9 @@ class Palette(BaseModel):
     def train_step(self):
         self.netG.train()
         self.train_metrics.reset()
-        for train_data in tqdm.tqdm(self.phase_loader):
+        self.epoch_step = 0
+        NUM = self.limit_batches if self.limit_batches > 0 else len(self.phase_loader)
+        for train_data in tqdm.tqdm(self.phase_loader,total=NUM):
             self.set_input(train_data)
             self.optG.zero_grad()
             loss = self.netG(self.gt_image, self.cond_image,
@@ -127,6 +131,9 @@ class Palette(BaseModel):
             if self.ema_scheduler is not None:
                 if self.iter > self.ema_scheduler['ema_start'] and self.iter % self.ema_scheduler['ema_iter'] == 0:
                     self.EMA.update_model_average(self.netG_EMA, self.netG)
+            if self.limit_batches > 0 and self.epoch_step >= self.limit_batches:
+                break
+            self.epoch_step += 1
 
         for scheduler in self.schedulers:
             scheduler.step()
@@ -183,7 +190,7 @@ class Palette(BaseModel):
                             y_0=self.gt_image, mask=self.mask, sample_num=self.sample_num)
                     else:
                         self.output, self.visuals = self.netG.restoration(self.cond_image, sample_num=self.sample_num)
-                        
+
                 self.iter += self.batch_size
                 self.writer.set_iter(self.epoch, self.iter, phase='test')
                 for met in self.metrics:
@@ -194,7 +201,7 @@ class Palette(BaseModel):
                 for key, value in self.get_current_visuals(phase='test').items():
                     self.writer.add_images(key, value)
                 self.writer.save_images(self.save_current_results())
-        
+
         test_log = self.test_metrics.result()
         ''' save logged informations into log dict ''' 
         test_log.update({'epoch': self.epoch, 'iters': self.iter})

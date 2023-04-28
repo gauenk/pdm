@@ -182,7 +182,14 @@ class InpaintDatasetVideo(data.Dataset):
 
         # -- crop it! [centering mask] --
         mask,vid,cond_image,mask_vid = self.crop_them_all(mask,vid,cond_image,mask_vid)
-        print(mask.shape)
+
+        # -- verify shapes --
+        all_vids = [mask,vid,cond_image,mask_vid]
+        for _vid in all_vids:
+            fmt = "%d_%d" % (vid.shape[-2],self.image_size[0])
+            assert _vid.shape[-2] == self.image_size[0],fmt
+            fmt = "%d_%d" % (vid.shape[-1],self.image_size[1])
+            assert _vid.shape[-1] == self.image_size[1],fmt
 
         # -- create output --
         ret = {}
@@ -202,8 +209,8 @@ class InpaintDatasetVideo(data.Dataset):
         args = th.where(mask[0]>0)
         args0 = args[-2]*1.
         args1 = args[-1]*1.
-        print(args0.min().item(),args0.max().item())
-        print(args1.min().item(),args1.max().item())
+        # print(args0.min().item(),args0.max().item())
+        # print(args1.min().item(),args1.max().item())
         cH = th.mean(args0)
         cW = th.mean(args1)
 
@@ -211,16 +218,20 @@ class InpaintDatasetVideo(data.Dataset):
         H,W = mask.shape[-2:]
         sH,sW = self.image_size
 
-        h_start = int(max(cH-sH/2,0))
-        h_shift = min(0,h_start - sH/2) + max(0,h_start + sH/2 - (H-1));
-        h_end = int(h_start - sH)
-        assert h_start - h_end == sH and h_end < H
+        h_start = int(cH-sH/2)
+        h_shift = min(0,h_start) + max(0,h_start + sH - (H-1));
+        h_start = h_start - h_shift
+        h_end = h_start + sH
+        # print(h_start,h_end,h_end-h_start,sH,H)
+        assert h_end - h_start == sH and h_end < H
         hslice = slice(h_start,h_start+sH)
 
-        w_start = int(max(cW-sW/2,0))
-        w_shift = min(0,w_start - sW/2) + max(0,w_start + sW/2 - (W-1));
-        w_end = int(w_start - sW)
-        assert w_start - w_end == sW and w_end < W
+        w_start = int(cW-sW/2)
+        w_shift = min(0,w_start) + max(0,w_start + sW - (W-1));
+        w_start = w_start - w_shift
+        w_end = w_start + sW
+        # print(w_start,w_end,w_end-w_start,sW,W)
+        assert w_end - w_start == sW and w_end < W
         wslice = slice(w_start,w_start+sW)
 
         # -- exec crop --
