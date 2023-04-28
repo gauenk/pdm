@@ -1,4 +1,6 @@
-from core.praser import init_obj
+from pdm.core.parser import init_obj
+from . import diffusion_stnls
+from .model import Palette
 
 def create_model(**cfg_model):
     """ create_model """
@@ -22,8 +24,12 @@ def define_network(logger, opt, network_opt):
 
 
 def define_loss(logger, loss_opt):
-    return init_obj(loss_opt, logger, default_file_name='models.loss', init_type='Loss')
+    return init_obj(loss_opt, logger,
+                    default_file_name='pdm.models.loss',
+                    init_type='Loss')
 
 def define_metric(logger, metric_opt):
-    return init_obj(metric_opt, logger, default_file_name='models.metric', init_type='Metric')
+    return init_obj(metric_opt, logger,
+                    default_file_name='pdm.models.metric',
+                    init_type='Metric')
 

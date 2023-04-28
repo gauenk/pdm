@@ -108,7 +108,7 @@ def parse(args):
         opt['gpu_ids'] = [int(id) for id in args.gpu_ids.split(',')]
     if args.batch is not None:
         opt['datasets'][opt['phase']]['dataloader']['args']['batch_size'] = args.batch
- 
+
     ''' set cuda environment '''
     if len(opt['gpu_ids']) > 1:
         opt['distributed'] = True

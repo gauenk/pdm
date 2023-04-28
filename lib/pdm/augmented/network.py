@@ -4,18 +4,17 @@ from inspect import isfunction
 from functools import partial
 import numpy as np
 from tqdm import tqdm
-from core.base_network import BaseNetwork
-class Network(BaseNetwork):
-    def __init__(self, unet, beta_schedule, module_name='sr3', **kwargs):
-        super(Network, self).__init__(**kwargs)
-        if module_name == 'sr3':
-            from .sr3_modules.unet import UNet
-        elif module_name == 'guided_diffusion':
-            from .guided_diffusion_modules.unet import UNet
-        elif module_name == 'diffusion_stnls':
-            from .diffusion_stnls.unet import UNet
+from pdm.core.base_network import BaseNetwork
 
-        self.denoise_fn = UNet(**unet)
+class Network(BaseNetwork):
+    def __init__(self, denoise_fn, beta_schedule, module_name='sr3', **kwargs):
+        super(Network, self).__init__(**kwargs)
+        # if module_name == 'sr3':
+        #     from .sr3_modules.unet import UNet
+        # elif module_name == 'guided_diffusion':
+        #     from .guided_diffusion_modules.unet import UNet
+        # self.denoise_fn = UNet(**unet)
+        self.denoise_fn = denoise_fn
         self.beta_schedule = beta_schedule
 
     def set_loss(self, loss_fn):
@@ -30,7 +29,7 @@ class Network(BaseNetwork):
 
         timesteps, = betas.shape
         self.num_timesteps = int(timesteps)
-        
+
         gammas = np.cumprod(alphas, axis=0)
         gammas_prev = np.append(1., gammas[:-1])
 
@@ -92,7 +91,7 @@ class Network(BaseNetwork):
 
         assert self.num_timesteps > sample_num, 'num_timesteps must greater than sample_num'
         sample_inter = (self.num_timesteps//sample_num)
-        
+
         y_t = default(y_t, lambda: torch.randn_like(y_cond))
         ret_arr = y_t
         for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
@@ -104,7 +103,7 @@ class Network(BaseNetwork):
                 ret_arr = torch.cat([ret_arr, y_t], dim=0)
         return y_t, ret_arr
 
-    def forward(self, y_0, y_cond=None, mask=None, noise=None):
+    def forward(self, y_0, y_cond=None, mask=None, noise=None, flows=None):
         # sampling from p(gammas)
         b, *_ = y_0.shape
         t = torch.randint(1, self.num_timesteps, (b,), device=y_0.device).long()
@@ -118,7 +117,7 @@ class Network(BaseNetwork):
             y_0=y_0, sample_gammas=sample_gammas.view(-1, 1, 1, 1), noise=noise)
 
         if mask is not None:
-            noise_hat = self.denoise_fn(torch.cat([y_cond, y_noisy*mask+(1.-mask)*y_0], dim=1), sample_gammas)
+            noise_hat = self.denoise_fn(torch.cat([y_cond, y_noisy*mask+(1.-mask)*y_0], dim=1), sample_gammas, flows)
             loss = self.loss_fn(mask*noise, mask*noise_hat)
         else:
             noise_hat = self.denoise_fn(torch.cat([y_cond, y_noisy], dim=1), sample_gammas)
@@ -179,5 +178,3 @@ def make_beta_schedule(schedule, n_timestep, linear_start=1e-6, linear_end=1e-2,
     else:
         raise NotImplementedError(schedule)
     return betas
-
-

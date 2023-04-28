@@ -7,24 +7,26 @@ import torch
 import torch.nn as nn
 
 
-import core.util as Util
+from . import util as Util
 CustomResult = collections.namedtuple('CustomResult', 'name result')
 
 class BaseModel():
     def __init__(self, opt, phase_loader, val_loader, metrics, logger, writer):
         """ init model with basic input, which are from __init__(**kwargs) function in inherited class """
         self.opt = opt
-        self.phase = opt['phase']
-        self.set_device = partial(Util.set_device, rank=opt['global_rank'])
+        self.phase = "train"#opt['phase']
+        # self.set_device = partial(Util.set_device, rank=opt['global_rank'])
+        self.set_device = partial(Util.set_device, rank=0)
 
         ''' optimizers and schedulers '''
         self.schedulers = []
         self.optimizers = []
 
         ''' process record '''
-        self.batch_size = self.opt['datasets'][self.phase]['dataloader']['args']['batch_size']
+        # self.batch_size = self.opt['datasets'][self.phase]['dataloader']['args']['batch_size']
+        self.batch_size = -1#self.opt['batch_size']
         self.epoch = 0
-        self.iter = 0 
+        self.iter = 0
 
         self.phase_loader = phase_loader
         self.val_loader = val_loader

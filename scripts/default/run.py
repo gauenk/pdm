@@ -4,11 +4,11 @@ import warnings
 import torch
 import torch.multiprocessing as mp
 
-from core.logger import VisualWriter, InfoLogger
-import core.praser as Praser
-import core.util as Util
-from data import define_dataloader
-from models import create_model, define_network, define_loss, define_metric
+from pdm.core.logger import VisualWriter, InfoLogger
+import pdm.core.parser as Parser
+import pdm.core.util as Util
+from pdm.data import define_dataloader
+from pdm.models import create_model, define_network, define_loss, define_metric
 
 def main_worker(gpu, ngpus_per_node, opt):
     """  threads running on each GPU """
@@ -73,7 +73,7 @@ if __name__ == '__main__':
 
     ''' parser configs '''
     args = parser.parse_args()
-    opt = Praser.parse(args)
+    opt = Parser.parse(args)
     
     ''' cuda devices '''
     gpu_str = ','.join(str(x) for x in opt['gpu_ids'])
