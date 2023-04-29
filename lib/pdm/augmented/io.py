@@ -144,10 +144,12 @@ def beta_pairs():
     pairs = {
         "train+schedule": "linear",
         "train+n_timestep": 2000,
+        # "train+n_timestep": 20,
         "train+linear_start": 1e-6,
         "train+linear_end": 0.01,
         "test+schedule": "linear",
         "test+n_timestep": 1000,
+        # "test+n_timestep": 10,
         "test+linear_start": 1e-4,
         "test+linear_end": 0.09
     }

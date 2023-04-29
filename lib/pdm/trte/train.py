@@ -9,7 +9,14 @@ from functools import partial
 from easydict import EasyDict as edict
 
 # -- loss --
+import torch.nn as nn
 import torch.nn.functional as F
+
+# -- optional wandb --
+try:
+    import wandb
+except:
+    pass
 
 # -- helpers --
 import pdm
@@ -48,6 +55,9 @@ def run(cfg):
     if econfig.is_init: return
     rank = 0
 
+    # -- unpack --
+    use_wandb = True
+
     # -=-=-=-=-=-=-=-=-=-=-
     #
     #    Create Trainer
@@ -78,25 +88,45 @@ def run(cfg):
 
     # -- data --
     loaders = pdm.data.io.load(cfg,phase_logger)
+    chkpt = Path("output/train/baseline/checkpoints/")
+    if not chkpt.exists():
+        chkpt.mkdir(parents=True)
 
     # -- palette --
     losses = [mse_loss]
     sample_num = cfgs.diff.sample_num
     metrics = [mae]
-    opt = {"batch_size":-1,"distributed":False,
-           "path":{"resume_state":False},
+    opt = {"batch_size":-1,
+           "distributed":False,
+           "global_rank":0,
+           "path":{"resume_state":False,
+                   "checkpoint":str(chkpt)},
            "train":{"n_epoch":cfg.nepochs,
                     "n_iter":cfg.niters,
-                    "log_iter":100}}
-    limit_batches = 150
+                    "log_iter":100,
+                    "save_checkpoint_epoch":1,
+                    "val_epoch":4}}
+    limit_batches = edict({"tr":cfg.limit_nbatches_tr,
+                           "val":cfg.limit_nbatches_val,
+                           "te":cfg.limit_nbatches_te})
     trainer = Palette([model], losses, sample_num,
                       cfgs.diff.task, [cfgs.optim], cfgs.ema,
                       limit_batches=limit_batches,
                       opt=opt,phase_loader=loaders.phase,val_loader=loaders.val,
-                      metrics=metrics,logger=phase_logger,writer=phase_writer)
+                      metrics=metrics,logger=phase_logger,writer=phase_writer,
+                      use_wandb=use_wandb)
+
+    # -- wandb --
+    if use_wandb:
+        run = wandb.init(project="pdm",config=cfg)
 
     # -- run --
     trainer.train()
+
+    # -- wandb --
+    if use_wandb:
+        wandb.finish()
+
 
 def train_pairs():
     pairs = {"num_workers":4,
@@ -144,7 +174,7 @@ def mse_loss(output, target):
     return F.mse_loss(output, target)
 
 def mae(input, target):
-    with torch.no_grad():
+    with th.no_grad():
         loss = nn.L1Loss()
         output = loss(input, target)
     return output

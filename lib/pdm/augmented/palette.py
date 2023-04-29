@@ -1,9 +1,17 @@
 import torch
+import torch as th
 import tqdm
 from pdm.core.base_model import BaseModel
 from pdm.core.logger import LogTracker
 import copy
 from dev_basics import flow
+from easydict import EasyDict as edict
+
+# -- optional wandb --
+try:
+    import wandb
+except:
+    pass
 
 class EMA():
     def __init__(self, beta=0.9999):
@@ -20,7 +28,8 @@ class EMA():
 
 class Palette(BaseModel):
     def __init__(self, networks, losses, sample_num, task,
-                 optimizers, ema_scheduler=None, limit_batches=0, **kwargs):
+                 optimizers, ema_scheduler=None, limit_batches=None,
+                 use_wandb=True, **kwargs):
         ''' must to init BaseModel with kwargs '''
         super(Palette, self).__init__(**kwargs)
 
@@ -28,6 +37,9 @@ class Palette(BaseModel):
         self.loss_fn = losses[0]
         self.netG = networks[0]
         self.limit_batches = limit_batches
+        self.use_wandb = use_wandb
+        if self.limit_batches is None:
+            self.limit_batches = edict({"tr":0,"val":0,"te":0})
         if ema_scheduler is not None:
             self.ema_scheduler = ema_scheduler
             self.netG_EMA = copy.deepcopy(self.netG)
@@ -71,9 +83,11 @@ class Palette(BaseModel):
         self.batch_size = len(data['path'])
 
     def get_current_visuals(self, phase='train'):
+        cond = (self.cond_image.detach()[:]+1)/2.
+        cond = th.clamp(cond,0,1).float().cpu()
         dict = {
             'gt_image': (self.gt_image.detach()[:].float().cpu()+1)/2,
-            'cond_image': (self.cond_image.detach()[:].float().cpu()+1)/2,
+            'cond_image': cond
         }
         if self.task in ['inpainting','uncropping']:
             dict.update({
@@ -84,7 +98,14 @@ class Palette(BaseModel):
             dict.update({
                 'output': (self.output.detach()[:].float().cpu()+1)/2
             })
-        return dict
+
+        unfurled = {}
+        for key,val in dict.items():
+            B = 1#val.shape[0]
+            for b in range(B):
+                # unfurled["%s_%s_%d" % (phase,key,b)] = val[b]
+                unfurled["%s_%s" % (phase,key)] = val[b]
+        return unfurled
 
     def save_current_results(self):
         ret_path = []
@@ -109,8 +130,9 @@ class Palette(BaseModel):
     def train_step(self):
         self.netG.train()
         self.train_metrics.reset()
-        self.epoch_step = 0
-        NUM = self.limit_batches if self.limit_batches > 0 else len(self.phase_loader)
+        self.epoch_step_tr = 0
+        LIM_BS = self.limit_batches.tr
+        NUM = LIM_BS if LIM_BS > 0 else len(self.phase_loader)
         for train_data in tqdm.tqdm(self.phase_loader,total=NUM):
             self.set_input(train_data)
             self.optG.zero_grad()
@@ -126,14 +148,22 @@ class Palette(BaseModel):
                 for key, value in self.train_metrics.result().items():
                     self.logger.info('{:5s}: {}\t'.format(str(key), value))
                     self.writer.add_scalar(key, value)
-                for key, value in self.get_current_visuals().items():
-                    self.writer.add_images(key, value)
+                if self.use_wandb:
+                    log_dict = self.train_metrics.result()
+                    log_dict = dict(log_dict,**{"iter":self.iter})
+                    for key, value in self.get_current_visuals("train").items():
+                        images = wandb.Image(value,"train_%d" % self.iter)
+                        log_dict[key] = images
+                    wandb.log(log_dict)
+                    # self.writer.add_images(key, value)
+                # for key, value in self.get_current_visuals().items():
+                #     self.writer.add_images(key, value)
             if self.ema_scheduler is not None:
                 if self.iter > self.ema_scheduler['ema_start'] and self.iter % self.ema_scheduler['ema_iter'] == 0:
                     self.EMA.update_model_average(self.netG_EMA, self.netG)
-            if self.limit_batches > 0 and self.epoch_step >= self.limit_batches:
+            if LIM_BS > 0 and self.epoch_step_tr >= LIM_BS:
                 break
-            self.epoch_step += 1
+            self.epoch_step_tr += 1
 
         for scheduler in self.schedulers:
             scheduler.step()
@@ -142,41 +172,60 @@ class Palette(BaseModel):
     def val_step(self):
         self.netG.eval()
         self.val_metrics.reset()
+        self.epoch_step_val = 0
+        LIM_BS = self.limit_batches.val
+        NUM = LIM_BS if LIM_BS > 0 else len(self.val_loader)
         with torch.no_grad():
-            for val_data in tqdm.tqdm(self.val_loader):
+            for val_data in tqdm.tqdm(self.val_loader,total=NUM):
                 self.set_input(val_data)
                 if self.opt['distributed']:
                     if self.task in ['inpainting','uncropping']:
-                        self.output, self.visuals = self.netG.module.restoration(self.cond_image, y_t=self.cond_image,
+                        self.output, self.visuals = self.netG.module.restoration(self.cond_image, self.flows, y_t=self.cond_image,
                             y_0=self.gt_image, mask=self.mask, sample_num=self.sample_num)
                     else:
-                        self.output, self.visuals = self.netG.module.restoration(self.cond_image, sample_num=self.sample_num)
+                        self.output, self.visuals = self.netG.module.restoration(self.cond_image, self.flows, sample_num=self.sample_num)
                 else:
                     if self.task in ['inpainting','uncropping']:
-                        self.output, self.visuals = self.netG.restoration(self.cond_image, y_t=self.cond_image, 
+                        self.output, self.visuals = self.netG.restoration(self.cond_image, self.flows, y_t=self.cond_image, 
                             y_0=self.gt_image, mask=self.mask, sample_num=self.sample_num)
                     else:
-                        self.output, self.visuals = self.netG.restoration(self.cond_image, sample_num=self.sample_num)
+                        self.output, self.visuals = self.netG.restoration(self.cond_image, self.flows, sample_num=self.sample_num)
 
                 self.iter += self.batch_size
                 self.writer.set_iter(self.epoch, self.iter, phase='val')
+
+                if LIM_BS > 0 and self.epoch_step_val >= LIM_BS:
+                    break
+                self.epoch_step_val += 1
 
                 for met in self.metrics:
                     key = met.__name__
                     value = met(self.gt_image, self.output)
                     self.val_metrics.update(key, value)
                     self.writer.add_scalar(key, value)
-                for key, value in self.get_current_visuals(phase='val').items():
-                    self.writer.add_images(key, value)
-                self.writer.save_images(self.save_current_results())
+                    if self.use_wandb:
+                        log_dict = self.val_metrics.result()
+                        log_dict = dict(log_dict,**{"iter":self.iter})
+                        for key, value in self.get_current_visuals(phase='val').items():
+                            images = wandb.Image(value,"val_%d" % self.iter)
+                            log_dict[key] = images
+                        wandb.log(log_dict)
+                # # self.writer.save_images(self.save_current_results())
+                # images = wandb.Image(
+                #     image_array, 
+                #     caption="Top: Output, Bottom: Input"
+                # )
+                # wandb.log({"examples": images})
 
         return self.val_metrics.result()
 
     def test(self):
         self.netG.eval()
         self.test_metrics.reset()
+        LIM_BS = self.limit_batches.te
+        NUM = LIM_BS if LIM_BS > 0 else len(self.phase_loader)
         with torch.no_grad():
-            for phase_data in tqdm.tqdm(self.phase_loader):
+            for phase_data in tqdm.tqdm(self.phase_loader,total=NUM):
                 self.set_input(phase_data)
                 if self.opt['distributed']:
                     if self.task in ['inpainting','uncropping']:
@@ -190,6 +239,10 @@ class Palette(BaseModel):
                             y_0=self.gt_image, mask=self.mask, sample_num=self.sample_num)
                     else:
                         self.output, self.visuals = self.netG.restoration(self.cond_image, sample_num=self.sample_num)
+
+                if LIM_BS > 0 and self.epoch_step_te >= LIM_BS:
+                    break
+                self.epoch_step_te += 1
 
                 self.iter += self.batch_size
                 self.writer.set_iter(self.epoch, self.iter, phase='test')

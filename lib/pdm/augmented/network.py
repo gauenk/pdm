@@ -46,6 +46,7 @@ class Network(BaseNetwork):
         self.register_buffer('posterior_mean_coef2', to_torch((1. - gammas_prev) * np.sqrt(alphas) / (1. - gammas)))
 
     def predict_start_from_noise(self, y_t, t, noise):
+        # print("[misc] t.shape: ",t.shape)
         return (
             extract(self.sqrt_recip_gammas, t, y_t.shape) * y_t -
             extract(self.sqrt_recipm1_gammas, t, y_t.shape) * noise
@@ -56,19 +57,28 @@ class Network(BaseNetwork):
             extract(self.posterior_mean_coef1, t, y_t.shape) * y_0_hat +
             extract(self.posterior_mean_coef2, t, y_t.shape) * y_t
         )
-        posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, y_t.shape)
+        posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped,
+                                                    t, y_t.shape)
         return posterior_mean, posterior_log_variance_clipped
 
-    def p_mean_variance(self, y_t, t, clip_denoised: bool, y_cond=None):
+    def p_mean_variance(self, y_t, t, flow, clip_denoised: bool, y_cond=None):
         noise_level = extract(self.gammas, t, x_shape=(1, 1)).to(y_t.device)
+        # print("noise_level.shape: ",noise_level.shape)
+        B = y_cond.shape[0]
+        t = t.view(B,)
+        noise_level = noise_level.view(B,-1)
         y_0_hat = self.predict_start_from_noise(
-                y_t, t=t, noise=self.denoise_fn(torch.cat([y_cond, y_t], dim=1), noise_level))
+                y_t, t=t, noise=self.denoise_fn(torch.cat([y_cond, y_t], dim=2),
+                                                noise_level, flow))
 
         if clip_denoised:
             y_0_hat.clamp_(-1., 1.)
 
+        # print("[a,b,c]: ",y_0_hat.shape,y_t.shape,t.shape)
         model_mean, posterior_log_variance = self.q_posterior(
             y_0_hat=y_0_hat, y_t=y_t, t=t)
+        # print("model_mean.shape: ",model_mean.shape)
+        # print("posterior_log_variance.shape: ",posterior_log_variance.shape)
         return model_mean, posterior_log_variance
 
     def q_sample(self, y_0, sample_gammas, noise=None):
@@ -80,24 +90,27 @@ class Network(BaseNetwork):
         )
 
     @torch.no_grad()
-    def p_sample(self, y_t, t, clip_denoised=True, y_cond=None):
+    def p_sample(self, y_t, t, flow, clip_denoised=True, y_cond=None):
+        # print("y_t.shape: ",y_t.shape)
+        # print("t.shape: ",t.shape)
         model_mean, model_log_variance = self.p_mean_variance(
-            y_t=y_t, t=t, clip_denoised=clip_denoised, y_cond=y_cond)
+            y_t=y_t, t=t, flow=flow, clip_denoised=clip_denoised, y_cond=y_cond)
         noise = torch.randn_like(y_t) if any(t>0) else torch.zeros_like(y_t)
         return model_mean + noise * (0.5 * model_log_variance).exp()
 
     @torch.no_grad()
-    def restoration(self, y_cond, y_t=None, y_0=None, mask=None, sample_num=8):
-        b, *_ = y_cond.shape
+    def restoration(self, y_cond, flow, y_t=None, y_0=None, mask=None, sample_num=8):
+        b,NF, *_ = y_cond.shape
 
         assert self.num_timesteps > sample_num, 'num_timesteps must greater than sample_num'
         sample_inter = (self.num_timesteps//sample_num)
 
         y_t = default(y_t, lambda: torch.randn_like(y_cond))
         ret_arr = y_t
-        for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
+        for i in tqdm(reversed(range(0, self.num_timesteps)),
+                      desc='sampling loop time step', total=self.num_timesteps):
             t = torch.full((b,), i, device=y_cond.device, dtype=torch.long)
-            y_t = self.p_sample(y_t, t, y_cond=y_cond)
+            y_t = self.p_sample(y_t, t, flow, y_cond=y_cond)
             if mask is not None:
                 y_t = y_0*(1.-mask) + mask*y_t
             if i % sample_inter == 0:
@@ -108,18 +121,18 @@ class Network(BaseNetwork):
         # sampling from p(gammas)
 
         b, NF, *_ = y_0.shape
-        t = torch.randint(1, self.num_timesteps, (b*NF,), device=y_0.device).long()
+        t = torch.randint(1, self.num_timesteps, (b,), device=y_0.device).long()
         gamma_t1 = extract(self.gammas, t-1, x_shape=(1, 1))
         sqrt_gamma_t2 = extract(self.gammas, t, x_shape=(1, 1))
         # print("gamma_t1.shape: ",gamma_t1.shape)
         # print("sqrt_gamma_t2.shape: ",sqrt_gamma_t2.shape)
-        sample_gammas = (sqrt_gamma_t2-gamma_t1) * torch.rand((b * NF, 1), device=y_0.device) + gamma_t1
-        sample_gammas = sample_gammas.view(b, NF, -1)
+        sample_gammas = (sqrt_gamma_t2-gamma_t1) * torch.rand((b, 1), device=y_0.device) + gamma_t1
+        sample_gammas = sample_gammas.view(b, 1, -1)
         # print("sample_gammas.shape: ",sample_gammas.shape)
 
         noise = default(noise, lambda: torch.randn_like(y_0))
         y_noisy = self.q_sample(
-            y_0=y_0, sample_gammas=sample_gammas.view(b, NF, 1, 1, 1), noise=noise)
+            y_0=y_0, sample_gammas=sample_gammas.view(b, 1, 1, 1, 1), noise=noise)
 
         # print("y_0.shape: ",y_0.shape)
         # print("y_cond.shape: ",y_cond.shape)
@@ -146,6 +159,15 @@ def default(val, d):
     if exists(val):
         return val
     return d() if isfunction(d) else d
+
+def extract_2d(a, t, x_shape=(1,1,1,1)):
+    B,NF, *_ = t.shape
+    # print("t.shape: ",t.shape)
+    t = t.reshape(list((B*NF,)) + list(t.shape[2:]))
+    # print("t.shape: ",t.shape)
+    out = a.gather(-1, t)
+    # print("out.shape: ",out.shape)
+    return out.reshape(B, NF, *((1,) * (len(x_shape) - 2)))
 
 def extract(a, t, x_shape=(1,1,1,1)):
     b, *_ = t.shape

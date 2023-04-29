@@ -6,7 +6,9 @@ import torch
 import torch as th
 import numpy as np
 from pathlib import Path
+from einops import repeat
 
+from dev_basics.utils import vid_io
 from .util.mask import (bbox2mask, brush_stroke_mask, get_irregular_mask, random_bbox, random_cropping_bbox)
 
 IMG_EXTENSIONS = [
@@ -68,6 +70,9 @@ def make_dataset(dir):
 
 def pil_loader(path):
     return Image.open(path).convert('RGB')
+
+def pil_loader_anno(path):
+    return Image.open(path)
 
 
 class InpaintDataset(data.Dataset):
@@ -141,7 +146,7 @@ class InpaintDatasetVideo(data.Dataset):
         self.ntotal = len(self.listed_names)
 
         self.tfs = transforms.Compose([
-                # transforms.Resize((image_size[0], image_size[1])),
+                transforms.Resize((image_size[0], image_size[1])),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5,0.5, 0.5])
         ])
@@ -152,6 +157,7 @@ class InpaintDatasetVideo(data.Dataset):
 
         self.image_size = image_size
         self.loader = loader
+        self.aloader = pil_loader_anno
         self.mask_config = mask_config
         self.mask_mode = self.mask_config['mask_mode']
         self.image_size = image_size
@@ -174,14 +180,30 @@ class InpaintDatasetVideo(data.Dataset):
         paths = self.get_paths(index)
         vid = [self.tfs(self.loader(path)) for path in paths]
         vid = th.stack(vid)
-        mask = self.get_anno_mask(paths)
+        # mask = self.get_anno_mask(paths)
+        mask = self.get_mask(vid.shape[0])
+
+        # -- crop it! [centering mask] --
+        # mask,vid = self.crop_them_all(mask,vid)
+
+        # # -- update mask [only 50% can be masked] --
+        # mask = self.ensure_nonmasked(mask)
 
         # -- create derivative quantities --
         cond_image = vid*(1. - mask) + mask*torch.randn_like(vid)
         mask_vid = vid*(1. - mask) + mask
 
-        # -- crop it! [centering mask] --
-        mask,vid,cond_image,mask_vid = self.crop_them_all(mask,vid,cond_image,mask_vid)
+        # -- [debug] view --
+        # print("vid.shape: ",vid.shape)
+        # print("mask.shape: ",mask.shape)
+        # debug_vid = vid*(1. - mask)
+        # vid_io.save_video((cond_image+1)/2.,"output/debug/","%d_cond"%index,itype="png")
+        # vid_io.save_video((mask_vid+1)/2.,"output/debug/","%d_mask"%index,itype="png")
+        # vid_io.save_video((vid+1)/2.,"output/debug/","%d_vid"%index,itype="png")
+        # exit(0)
+
+        # # -- crop it! [centering mask] --
+        # mask,vid,cond_image,mask_vid = self.crop_them_all(mask,vid,cond_image,mask_vid)
 
         # -- verify shapes --
         all_vids = [mask,vid,cond_image,mask_vid]
@@ -203,6 +225,19 @@ class InpaintDatasetVideo(data.Dataset):
     def __len__(self):
         return self.ntotal
 
+    def ensure_nonmasked(self,mask):
+        self.perc_thresh = 0.5
+        perc = (mask.sum()/mask.numel()).item()
+        if perc > self.perc_thresh:
+            H,W = mask.shape[-2:]
+            H2,W2 = H//2,W//2
+            sH,sW = H//4,W//4
+            mask_c = th.zeros_like(mask)
+            mask_c[:,:,sH:sH+H2,sW:sW+W2] = mask[:,:,sH:sH+H2,sW:sW+W2]
+        else:
+            mask_c = mask
+        return mask_c
+
     def crop_them_all(self,mask,*vids):
 
         # -- find center of mask --
@@ -223,7 +258,8 @@ class InpaintDatasetVideo(data.Dataset):
         h_start = h_start - h_shift
         h_end = h_start + sH
         # print(h_start,h_end,h_end-h_start,sH,H)
-        assert h_end - h_start == sH and h_end < H
+        msg = (h_start,h_end,h_end-h_start,sH,H)
+        assert h_end - h_start == sH and h_end < H,msg
         hslice = slice(h_start,h_start+sH)
 
         w_start = int(cW-sW/2)
@@ -231,13 +267,15 @@ class InpaintDatasetVideo(data.Dataset):
         w_start = w_start - w_shift
         w_end = w_start + sW
         # print(w_start,w_end,w_end-w_start,sW,W)
-        assert w_end - w_start == sW and w_end < W
+        msg = (h_start,h_end,h_end-h_start,sH,H)
+        assert w_end - w_start == sW and w_end < W,msg
         wslice = slice(w_start,w_start+sW)
 
         # -- exec crop --
         cvids = [mask[...,hslice,wslice]]
         for vid in vids:
             cvids.append(vid[...,hslice,wslice])
+
         return cvids
 
     def get_anno_mask(self,ipaths):
@@ -251,14 +289,22 @@ class InpaintDatasetVideo(data.Dataset):
             apath = Path(apath).with_suffix('.png')
             return apath
         apaths = [reformat(p) for p in ipaths]
-        annos = [self.tfs_annos(self.loader(apath)) for apath in apaths]
+        annos = [self.tfs_annos(self.aloader(apath)) for apath in apaths]
         annos = th.stack(annos)
+
+        # -- debug --
+        # index = th.randint(0,10,(1,)).item()
+        # vid_io.save_video(annos/annos.max(),"output/debug/",
+        #             "%d_anno"%(index),itype="png")
+
 
         #
         # -- gather & pick uniqs --
         #
 
         uniqs = th.unique(annos[0]).numpy().tolist()
+        if len(uniqs) > 1:
+            uniqs = sorted(uniqs)[1:] # remove background class
         label = uniqs[th.randint(0,len(uniqs),(1,))[0]]
 
         #
@@ -269,7 +315,13 @@ class InpaintDatasetVideo(data.Dataset):
 
         return mask
 
-    def get_mask(self):
+    def get_mask(self,t):
+        mask = bbox2mask(self.image_size, random_cropping_bbox(mask_mode=self.mask_mode))
+        mask = th.tensor(mask)*1.
+        mask = repeat(mask,'h w 1 -> t 1 h w',t=t)
+        # print(mask.shape)
+        return mask
+
         if self.mask_mode == 'bbox':
             mask = bbox2mask(self.image_size, random_bbox())
         elif self.mask_mode == 'center':

@@ -19,11 +19,12 @@ from .dataset import InpaintDatasetVideo
 def load(cfg,logger):
 
     # -- configs --
-    mask_config = {"mask_mode": "hybrid"}
+    # mask_config = {"mask_mode": "hybrid"}
+    mask_config = {"mask_mode": "fourdirection"}
     dataloader = {
         "validation_split": 2,
         "args":{
-            "batch_size": 3,
+            "batch_size": 4,
             "num_workers": 4,
             "shuffle": True,
             "pin_memory": True,
@@ -38,6 +39,7 @@ def load(cfg,logger):
         }
     }
     gl_seed = 123
+    image_size = [256,256]
 
     # -- data --
     mode = "train"
@@ -45,7 +47,8 @@ def load(cfg,logger):
         root = "data/youtube_voc/train"
     if mode == "val":
         root = "data/youtube_voc/valid"
-    phase_dataset = InpaintDatasetVideo(root,cfg.nframes,mask_config)
+    phase_dataset = InpaintDatasetVideo(root,cfg.nframes,mask_config,
+                                        image_size=image_size)
     data_len = len(phase_dataset)
     val_dataset = None
     print(data_len)

@@ -2,6 +2,7 @@ from abc import abstractmethod
 import math
 
 import torch
+import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
@@ -216,6 +217,7 @@ class ResBlock(EmbedBlock):
             h = in_conv(h)
         else:
             h = self.in_layers(x)
+        # print("[emb]: ",emb.shape)
         emb_out = self.emb_layers(emb).type(h.dtype)
         while len(emb_out.shape) < len(h.shape):
             emb_out = emb_out[..., None]
@@ -227,10 +229,15 @@ class ResBlock(EmbedBlock):
             # print(h.shape,out_norm)
             # print(scale.shape,shift.shape)
             # print("[shape]: ",h.shape,scale.shape,shift.shape)
-            # h = rearrange(h,'(b t) c h w -> b t) c h w')
-            h = out_norm(h) * (1 + scale) + shift
-            h = out_rest(h)
-            # h = rearrange(h,'(b t) c h w -> b t c h w',b=B)
+            B = scale.shape[0]
+            h = rearrange(h,'(b t) c h w -> b t c h w',b=B)
+            hbs = []
+            for b in range(B):
+                hb = out_norm(h[b]) * (1 + scale[[b]]) + shift[[b]]
+                hb = out_rest(hb)
+                hbs.append(hb)
+            hbs = th.stack(hbs)
+            h = rearrange(hbs,'b t c h w -> (b t) c h w',b=B)
         else:
             h = h + emb_out
             h = self.out_layers(h)
@@ -644,25 +651,30 @@ class UNet(nn.Module):
 
         B,NF,*_ = vid.shape
         hs = []
-        gammas = gammas.view(B*NF, )
+        gammas = gammas.view(B, )
         emb = self.cond_embed(gamma_embedding(gammas, self.inner_channel))
         # emb = emb.view(B,NF,-1)
+        # print("\n\n[vid,gammas]: ",vid.shape,gammas.shape)
 
         h = vid.type(torch.float32)
         for module in self.input_blocks:
             h = module(h, emb, flows)
+            # print("[h,emb]: ",h.shape,emb.shape)
             hs.append(h)
         h = self.middle_block(h, emb, flows)
         for module in self.output_blocks:
             h = torch.cat([h, hs.pop()], dim=2)
             h = module(h, emb, flows)
+            # print("[h,emb]: ",h.shape,emb.shape)
         h = h.type(vid.dtype)
 
         # -- output --
         B = h.shape[0]
         h = rearrange(h,'b t c h w -> (b t) c h w')
+        # print("[h0]: ",h.shape)
         h = self.out(h)
         h = rearrange(h,'(b t) c h w -> b t c h w',b=B)
+        # print("[h1]: ",h.shape)
 
         return h
 
