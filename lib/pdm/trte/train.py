@@ -77,6 +77,10 @@ def run(cfg):
     # -- model --
     model = pdm.load_model(cfg)
 
+    # -- load --
+    # load_state(cfg,model)
+    # exit(0)
+
     # phase_loader = phase_loader,
     # val_loader = val_loader,
     # phase_loader, val_loader = define_dataloader(phase_logger, opt)
@@ -99,7 +103,7 @@ def run(cfg):
     opt = {"batch_size":-1,
            "distributed":False,
            "global_rank":0,
-           "path":{"resume_state":False,
+           "path":{"resume_state":"output/train/baseline/checkpoints/10",
                    "checkpoint":str(chkpt)},
            "train":{"n_epoch":cfg.nepochs,
                     "n_iter":cfg.niters,
@@ -128,6 +132,12 @@ def run(cfg):
         wandb.finish()
 
 
+def load_state(cfg,model):
+    ckpt_fn = "output/train/baseline/checkpoints/10_Network.pth"
+    chkpt = th.load(ckpt_fn)
+    print(list(chkpt.keys()))
+    model.load_state_dict(chkpt)
+
 def train_pairs():
     pairs = {"num_workers":4,
              "dset_tr":"tr",
@@ -143,7 +153,7 @@ def train_pairs():
              "precision":32,
              "limit_train_batches":1.,
              "nepochs":30,
-             "niters":100000,
+             "niters":1000000000,
              "uuid":"",
              "swa":False,
              "swa_epoch_start":0.8,

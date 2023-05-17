@@ -51,6 +51,7 @@ class Palette(BaseModel):
         self.netG = self.set_device(self.netG, distributed=self.opt['distributed'])
         if self.ema_scheduler is not None:
             self.netG_EMA = self.set_device(self.netG_EMA, distributed=self.opt['distributed'])
+
         self.load_networks()
 
         self.optG = torch.optim.Adam(list(filter(lambda p: p.requires_grad, self.netG.parameters())), **optimizers[0])

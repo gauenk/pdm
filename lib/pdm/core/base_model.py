@@ -111,8 +111,11 @@ class BaseModel():
         if self.opt['path']['resume_state'] is None:
             return 
         self.logger.info('Beign loading pretrained model [{:s}] ...'.format(network_label))
+        # print("Beign loading training states")
+
 
         model_path = "{}_{}.pth".format(self. opt['path']['resume_state'], network_label)
+        # print("model_path: ",model_path,os.path.exists(model_path))
         
         if not os.path.exists(model_path):
             self.logger.warning('Pretrained model in [{:s}] is not existed, Skip it'.format(model_path))
@@ -141,6 +144,7 @@ class BaseModel():
         """ resume the optimizers and schedulers for training, only work when phase is test or resume training enable """
         if self.phase!='train' or self. opt['path']['resume_state'] is None:
             return
+        print("Beign loading training states")
         self.logger.info('Beign loading training states'.format())
         assert isinstance(self.optimizers, list) and isinstance(self.schedulers, list), 'optimizers and schedulers must be a list.'
         
